@@ -12,6 +12,7 @@ import socket
 import time
 import concurrent.futures
 import ssl
+import ipaddress
 
 from ColorPrinter import color_print
 from GlobalDNS import GlobalDNS
@@ -38,9 +39,17 @@ def https_test(ip, host, port=443, max_retries=5):
     """
     attempts = 0
     delay = float('inf')
+    
+    # Determine the address family based on the IP format
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        family = socket.AF_INET6 if isinstance(ip_obj, ipaddress.IPv6Address) else socket.AF_INET
+    except ValueError:
+        family = socket.AF_INET
+
     while attempts < max_retries:
         try:
-            raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw_sock = socket.socket(family, socket.SOCK_STREAM)
             raw_sock.settimeout(5)  # 超时设定为 5 秒
             start = time.time()
             raw_sock.connect((ip, port))

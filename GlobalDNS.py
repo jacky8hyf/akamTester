@@ -11,6 +11,36 @@ import re
 import concurrent.futures
 import cloudscraper 
 import json
+import ipaddress
+
+def extract_ips(text):
+    """
+    Extracts valid global unicast IPv4 and IPv6 addresses from text.
+    Filters out loopback, link-local, multicast, and unspecified addresses.
+    """
+    found = set()
+    # IPv4 extraction
+    ipv4_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+    for ip in ipv4_pattern.findall(text):
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            if isinstance(ip_obj, ipaddress.IPv4Address):
+                if not (ip_obj.is_loopback or ip_obj.is_unspecified or ip_obj.is_link_local or ip_obj.is_multicast):
+                    found.add(ip)
+        except ValueError:
+            pass
+    # IPv6 extraction
+    ipv6_pattern = re.compile(r'\b[0-9a-fA-F:]{3,39}\b')
+    for candidate in ipv6_pattern.findall(text):
+        if ':' in candidate:
+            try:
+                ip_obj = ipaddress.ip_address(candidate)
+                if isinstance(ip_obj, ipaddress.IPv6Address):
+                    if not (ip_obj.is_loopback or ip_obj.is_unspecified or ip_obj.is_link_local or ip_obj.is_multicast):
+                        found.add(candidate)
+            except ValueError:
+                pass
+    return found
 
 class GlobalDNS():
     """
@@ -71,22 +101,21 @@ class GlobalDNS():
 
 
     def __scrape_dnschecker(self):
-        base_url = "https://dnschecker.org/dns-checker.php"
-        params = {
-            "query": self.__domain,
-            "type": "A",
-            "dns": "All"
-        }
-        try:
-            resp = self.scraper.get(base_url, params=params, timeout=10)
-            if resp.status_code != 200:
-                return
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            ip_matches = ip_pattern.findall(resp.text)
-            for ip in ip_matches:
-                self.__ip_list.add(ip)
-        except Exception as e:
-            print(f"抓取 dnschecker.org 失败: {e}")
+        for qtype in ["A", "AAAA"]:
+            base_url = "https://dnschecker.org/dns-checker.php"
+            params = {
+                "query": self.__domain,
+                "type": qtype,
+                "dns": "All"
+            }
+            try:
+                resp = self.scraper.get(base_url, params=params, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                for ip in extract_ips(resp.text):
+                    self.__ip_list.add(ip)
+            except Exception as e:
+                print(f"抓取 dnschecker.org ({qtype}) 失败: {e}")
 
 
     def __scrape_whatsmydns(self):
@@ -95,19 +124,29 @@ class GlobalDNS():
             response = self.scraper.get(url_servers, timeout=10)
             servers_json = json.loads(response.content)
             server_ids = [server['id'] for server in servers_json]
-            def query_server(server_id):
-                url = f"https://www.whatsmydns.net/api/details?server={server_id}&type=A&query={self.__domain}"
+            def query_server(server_id_and_type):
+                server_id, qtype = server_id_and_type
+                url = f"https://www.whatsmydns.net/api/details?server={server_id}&type={qtype}&query={self.__domain}"
                 r = self.scraper.get(url, timeout=10)
                 try:
                     details = json.loads(r.text)
                     ip_list = details.get("data", [])[0].get("response", [])
                     if isinstance(ip_list, list):
-                        return ip_list
+                        valid_ips = []
+                        for item in ip_list:
+                            valid_ips.extend(extract_ips(item))
+                        return valid_ips
                 except Exception:
                     return []
                 return []
+            
+            tasks = []
+            for server_id in server_ids:
+                tasks.append((server_id, 'A'))
+                tasks.append((server_id, 'AAAA'))
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                results = executor.map(query_server, server_ids)
+                results = executor.map(query_server, tasks)
             for result in results:
                 for ip in result:
                     self.__ip_list.add(ip)
@@ -122,9 +161,7 @@ class GlobalDNS():
             resp = self.scraper.get(base_url, params=params, timeout=10)
             if resp.status_code != 200:
                 return
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            ip_matches = ip_pattern.findall(resp.text)
-            for ip in ip_matches:
+            for ip in extract_ips(resp.text):
                 self.__ip_list.add(ip)
         except Exception as e:
             print(f"抓取 viewdns.info 失败: {e}")
@@ -137,55 +174,57 @@ class GlobalDNS():
             resp = self.scraper.get(base_url, params=params, timeout=10)
             if resp.status_code != 200:
                 return
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            ip_matches = ip_pattern.findall(resp.text)
-            for ip in ip_matches:
+            for ip in extract_ips(resp.text):
                 self.__ip_list.add(ip)
         except Exception as e:
             print(f"抓取 dnspropagation.net 失败: {e}")
 
 
     def __scrape_digwebinterface(self):
-        base_url = "https://www.digwebinterface.com/"
-        params = {"q": self.__domain, "type": "A"}
-        try:
-            resp = self.scraper.get(base_url, params=params, timeout=10)
-            if resp.status_code != 200:
-                return
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            ip_matches = ip_pattern.findall(resp.text)
-            for ip in ip_matches:
-                self.__ip_list.add(ip)
-        except Exception as e:
-            print(f"抓取 digwebinterface.com 失败: {e}")
+        for qtype in ["A", "AAAA"]:
+            base_url = "https://www.digwebinterface.com/"
+            params = {"q": self.__domain, "type": qtype}
+            try:
+                resp = self.scraper.get(base_url, params=params, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                for ip in extract_ips(resp.text):
+                    self.__ip_list.add(ip)
+            except Exception as e:
+                print(f"抓取 digwebinterface.com ({qtype}) 失败: {e}")
 
 
     def __extra_dns_query(self):
-        for dns_server in self.__extra_dns_servers:
-            try:
-                resolver = dns.resolver.Resolver()
-                resolver.nameservers = [socket.gethostbyname(dns_server)]
-                answers = resolver.resolve(self.__domain, 'A')
-                for rdata in answers:
-                    self.__ip_list.add(rdata.address)
-            except Exception:
-                pass
+        for qtype in ['A', 'AAAA']:
+            for dns_server in self.__extra_dns_servers:
+                try:
+                    resolver = dns.resolver.Resolver()
+                    resolver.nameservers = [socket.gethostbyname(dns_server)]
+                    answers = resolver.resolve(self.__domain, qtype)
+                    for rdata in answers:
+                        self.__ip_list.add(rdata.address)
+                except Exception:
+                    pass
 
 
     def __resolve_cname(self):
         try:
-            cname_answers = dns.resolver.resolve(self.__domain, 'CNAME')
+            resolver = dns.resolver.Resolver()
+            cname_answers = resolver.resolve(self.__domain, 'CNAME')
             for cname_record in cname_answers:
                 cname_domain = cname_record.target.to_text().rstrip('.')
-                for dns_server in self.__extra_dns_servers:
-                    try:
-                        resolver = dns.resolver.Resolver()
-                        resolver.nameservers = [socket.gethostbyname(dns_server)]
-                        answers = resolver.resolve(cname_domain, 'A')
-                        for rdata in answers:
-                            self.__ip_list.add(rdata.address)
-                    except:
-                        pass
+                for qtype in ['A', 'AAAA']:
+                    for dns_server in self.__extra_dns_servers:
+                        try:
+                            resolver = dns.resolver.Resolver()
+                            resolver.timeout = 1.0
+                            resolver.lifetime = 2.0
+                            resolver.nameservers = [socket.gethostbyname(dns_server)]
+                            answers = resolver.resolve(cname_domain, qtype)
+                            for rdata in answers:
+                                self.__ip_list.add(rdata.address)
+                        except:
+                            pass
         except:
             pass
 
