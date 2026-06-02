@@ -199,6 +199,8 @@ class GlobalDNS():
             for dns_server in self.__extra_dns_servers:
                 try:
                     resolver = dns.resolver.Resolver()
+                    resolver.timeout = 1.0
+                    resolver.lifetime = 2.0
                     resolver.nameservers = [socket.gethostbyname(dns_server)]
                     answers = resolver.resolve(self.__domain, qtype)
                     for rdata in answers:
@@ -210,6 +212,8 @@ class GlobalDNS():
     def __resolve_cname(self):
         try:
             resolver = dns.resolver.Resolver()
+            resolver.timeout = 1.0
+            resolver.lifetime = 2.0
             cname_answers = resolver.resolve(self.__domain, 'CNAME')
             for cname_record in cname_answers:
                 cname_domain = cname_record.target.to_text().rstrip('.')
